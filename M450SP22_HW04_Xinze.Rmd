@@ -1,0 +1,254 @@
+---
+title: "HW04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Load data and view the description of variables
+
+```{r}
+library(tidyr)
+library(ISLR)
+library(olsrr)
+library(car)
+library(glmnet)
+```
+
+```{r}
+psa <- read.table("D:/workfiles/450/HW/HW04/PSA.txt")
+names(psa) <- c("ID","PSA_level","Cancer_Volume","Weight","Age","Benign_Prostatic_Hyperplasia","Seminal_Vesicle_Invasion","Capsular_Penetation","Gleason_Score")
+names(psa)
+dim(psa)
+```
+##### There are 97 observations and 9 variables, indicating the development trend of the patient's condition.
+##### Before we do any statistical works, let's check on cases with missing responses.
+```{r}
+print(sprintf("The number of cases with missing values is %s.", sum(!complete.cases(psa))))
+```
+##### We see that there is no case with missing values.
+
+```{r}
+psa$ID <- NULL
+head(psa)
+```
+
+```{r}
+tail(psa)
+```
+
+```{r}
+summary(psa)
+```
+##### We then will be using the data set psa that contain nine features (to regress PSA level on eight covariates) for 97 cases/patients.
+
+2. Explore the data
+
+##### First, let's have a look on scatter matrix and correlation matrix. The intension is to find the evidence of 
+##### 1.correlation between y and xi's
+##### 2.correlation among xi's
+##### Note: For the convenience of model analysis,  PSA_level,  Cancer_Volume, Benign_Prostatic_Hyperplasia, Seminal_Vesicle_Invasion, Capsular_Penetation and Gleason_Score are referred to PL, CV, BPH, SVI, CP and GS respectively.
+
+```{r}
+names(psa) <- c("PL","CV","Weight","Age","BPH","SVI","CP","GS")
+cor(psa, method = c("pearson"))
+```
+##### Here, one sees that PSA level is not strongly correlated with any of the covariates and some covariates are relatively-strongly correlated.
+
+## 3. Fit data with full model
+### 3.1 Fit data with full model
+##### We will fit the full model first.
+```{r}
+full <- lm(formula = PL~.,data = psa)
+summary(full)
+```
+### 3.2 Model diagnostics
+
+```{r}
+ols_plot_diagnostics(full,print_plot = TRUE)
+```
+
+```{r}
+durbinWatsonTest(full,max.lag=1,alternative="positive")
+```
+
+```{r}
+durbinWatsonTest(full,max.lag=1,alternative="negative")
+```
+
+```{r}
+ols_test_normality(full)
+```
+##### We also test for correlation by Durbin Watson tests (one for positive correlation, one for negative correlation), which indicate there is no significant evidence against zero correlation.
+
+### 3.3 Variable transformation
+
+##### Note that normality tests are significant, meaning normality is violated. Looking at the histogram of residuals along with heteroscedasticity (funnel shapped scatters), logarithm transformation will be attempted.
+
+```{r}
+psa$PL=log(psa$PL)
+lnfull <- lm(PL~.,data=psa)
+summary(lnfull)
+```
+```{r}
+ols_plot_diagnostics(lnfull, print_plot = TRUE)
+```
+
+
+```{r}
+durbinWatsonTest(lnfull,max.lag=1,alternative="positive")
+```
+
+```{r}
+durbinWatsonTest(lnfull,max.lag=1,alternative="negative")
+```
+
+```{r}
+ols_test_normality(lnfull)
+```
+
+##### With in-transformed PSA level, th regression model improves in .. and .., heteroscedasticity ( now more uniformly spreaded) and normality (at least now QQ-plot looks much better and KS test PASSes the normality test). We will now proceed with the evaluation on Collinearity, which is not influenced by any transformation on response.
+
+## 4. Evaluation of multicollinearity
+
+```{r}
+ols_coll_diag(lnfull)
+```
+
+##### From VIFs, we see none of them is above 10. For the Tolerance (a.k.a. Variance). None of the condition indices are above 30. Though there is a TIF above 0.5, overall there is no serious concern about multicollinearity. Hence, we will move on with model selection.
+
+## 5. Variable Selection
+##### We will try following schemes for variable selection:1.2.3.4.
+
+### 5.1 All possible models
+
+```{r}
+select01 = ols_step_all_possible(lnfull)
+plot(select01)
+```
+
+##### In each of the criterion, the red triangles mark the best model among ones of the same complexity level~(number of predictors)
+
+```{r}
+(Mod_cp=select01$predictors[which.min(select01$cp)])
+```
+```{r}
+(Mod_adjr=select01$predictors[which.max(select01$adjr)])
+```
+```{r}
+(Mod_aic=select01$predictors[which.min(select01$aic)])
+```
+
+```{r}
+(Mod_sbic=select01$predictors[which.min(select01$sbic)])
+```
+
+```{r}
+(Mod_sbc=select01$predictors[which.min(select01$sbc)])
+```
+##### Extracting the best models under each of the five criteria (excluding R2). One sees that those criteria land on the same model:"CV BPH SVI GS".
+
+### 5.2 Best subset models
+
+```{r}
+select02=ols_step_best_subset(lnfull)
+plot(select02)
+```
+
+```{r}
+(Mod_best=select02$predictors[3])
+```
+### Using the Best subset under set of criteria, the best of the best models is "CV BPH SVI".
+
+### 5.3 Automatic model selection
+
+```{r}
+# Forward
+select03=ols_step_forward_p(lnfull)
+(Mod_fwd=select03$predictors)
+```
+
+```{r}
+# Backward
+select04=ols_step_backward_p(lnfull)
+(Mod_bwd=select04$indvar[!(select04$indvar %in% select04$removed)])
+```
+
+```{r}
+# Both
+select05=ols_step_both_p(lnfull)
+(Mod_both=select05$predictors)
+```
+
+###### Using automatic model selection, all three searches agree on model with regressors, "CV" "BPH" "SVI" "GS". Next, we try LASSO (Least Absolute Shrinkage and Selection Operator).
+
+### 5.4 LASSO
+
+```{r}
+set.seed(1)
+cv.out=cv.glmnet(model.matrix(lnfull)[,-1],psa$PL,alpha=1)
+plot(cv.out)
+```
+```{r}
+(bestlam=cv.out$lambda.min)
+```
+
+```{r}
+out=glmnet(model.matrix(lnfull)[,-1],psa$PL,alpha=1,lambda=bestlam)
+lasso.coef=coef(out)
+lasso.coef
+```
+## The final model found by LASSO is the model with five variables, "CV Weight BPH SVI GS".So, after summarizing from all different selection schemes, we narrowed down to the final three models. 1. 2. 
+
+## 6. Cross-Validation
+
+##### To further evaluate the superiority between these two models, Leave-one-out cross validation will be conducted.
+
+```{r}
+# Cross Validation - LOOCV 
+M01=paste("PL~CV+BPH+SVI+GS")
+M02=paste("PL~CV+Weight+BPH+SVI+GS")
+n=nrow(psa)
+loocv_err=matrix(NA,n,2,dimnames=list(NULL, c("M01","M02")))
+for (i in (1:n))
+{
+  fit01=lm(M01,data=psa[-i,])
+  fit02=lm(M02,data=psa[-i,])
+  loocv_err[i,]=(c(predict(fit01,psa[i,]),predict(fit02,psa[i,]))-psa$PL[i])**2
+}
+colMeans(loocv_err)
+```
+
+```{r}
+which.min(colMeans(loocv_err))
+```
+
+```{r}
+print(M01)
+```
+
+##### Based on those two scenarios, the best model contains “CV BPH SVI GS”.
+
+```{r}
+final=lm(M01,data=psa)
+summary(final)
+```
+
+```{r}
+ols_plot_diagnostics(final, print_plot = TRUE)
+```
+
+```{r}
+durbinWatsonTest(final,max.lag=1,alternative="positive")
+```
+
+```{r}
+durbinWatsonTest(final,max.lag=1,alternative="negative")
+```
+
+```{r}
+ols_test_normality(final)
+```
+##### The final model is 
